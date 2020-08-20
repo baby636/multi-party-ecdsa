@@ -1,0 +1,21 @@
+[package]
+name = "libmpecdsa"
+version = "0.1.0"
+authors = ["leo <skipjack8@live.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "mpecdsa"
+path = "src/mpecdsa.rs"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+libc = "0.2"
+multi-party-ecdsa = {path = "../"}
+serde_json = "1.0"
+
+[dependencies.curv]
+git = "https://github.com/KZen-networks/curv"
+tag = "v0.2.6"
+features = ["ec_secp256k1"]
