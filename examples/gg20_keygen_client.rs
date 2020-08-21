@@ -238,6 +238,9 @@ fn main() {
             j += 1;
         }
     }
+    let n = PARTIES.clone() as usize;
+    let pk_vec = (0..n).map(|i| dlog_proof_vec[i].pk).collect::<Vec<GE>>();
+
     match Keys::verify_dlog_proofs(&params, &dlog_proof_vec, &y_vec) {
         Ok(()) => (),
         Err(e) => {
@@ -247,16 +250,23 @@ fn main() {
     };
 
     //save key to file
-    let paillier_key_vec = (0..PARTIES)
+    let e_vec = (0..PARTIES)
         .map(|i| bc1_vec[i as usize].e.clone())
         .collect::<Vec<EncryptionKey>>();
+    let h1_h2_N_tilde_vec = bc1_vec
+        .iter()
+        .map(|bc1| bc1.dlog_statement.clone())
+        .collect::<Vec<DLogStatement>>();
+
     let keygen_json = serde_json::to_string(&(
         party_keys,
         shared_keys,
-        party_num_int,
+        pk_vec,
+        y_sum,
         vss_schme_vec,
-        paillier_key_vec,
-        y_sum
+        e_vec,
+        h1_h2_N_tilde_vec,
+        party_num_int,
     )).unwrap();
     fs::write(env::args().nth(2).unwrap(), keygen_json).expect("Unable to save");
 
