@@ -26,7 +26,7 @@ use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::party_i::{
 
 mod lib;
 
-pub struct Context {
+pub struct KeygenContext {
     party_index: u16,
     party_keys: Keys,
     params: Parameters,
@@ -45,13 +45,13 @@ pub extern "system" fn libmpecdsa_kengen_ctx_init(
     party_index: i32,
     party_total: i32,
     threshold: i32,
-) -> *mut Context {
+) -> *mut KeygenContext {
     assert!(party_index > 0, "party index must be positive.");
     assert!(party_index <= party_total, "party index must be less than party_total.");
     assert!(threshold > 0, "threshold must be positive.");
     assert!(threshold < party_total, "threshold must be less than party_total.");
 
-    let ctx = Box::new(Context {
+    let ctx = Box::new(KeygenContext {
         party_index: party_index as u16,
         party_keys: Keys::create(0),
         params: Parameters {
@@ -75,14 +75,14 @@ pub extern "system" fn libmpecdsa_kengen_ctx_init(
 }
 
 #[no_mangle]
-pub extern "system" fn libmpecdsa_kengen_ctx_free(ctx: *mut Context) {
+pub extern "system" fn libmpecdsa_kengen_ctx_free(ctx: *mut KeygenContext) {
     drop(unsafe { Box::from_raw(ctx) });
 }
 
 //return { bc || decom }
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round1(
-    ctx: *mut Context,
+    ctx: *mut KeygenContext,
     bc_length: *mut i32, //size = 1
     decom_length: *mut i32, // size = 1
 ) -> *mut c_char {
@@ -111,7 +111,7 @@ pub extern "system" fn libmpecdsa_keygen_round1(
 // return ciphertexts,  and each length listed in  ciphertexts_length
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round2(
-    ctx: *mut Context,
+    ctx: *mut KeygenContext,
     bcs: *mut c_char, //self included
     bc_i_length: *const i32, //size = party_total
     decoms: *mut c_char, //self included
@@ -203,7 +203,7 @@ pub extern "system" fn libmpecdsa_keygen_round2(
             }
 
             CString::new(result).unwrap().into_raw()
-        },
+        }
         Err(_) => {
             unsafe {
                 *ciphertexts_length = 0
@@ -215,7 +215,7 @@ pub extern "system" fn libmpecdsa_keygen_round2(
 
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round3(
-    ctx: *mut Context,
+    ctx: *mut KeygenContext,
     ciphertexts: *mut c_char,// exclude self
     ciphertext_i_length: *const i32,//party_total - 1
     result_length: *mut i32, // size = 1
@@ -266,7 +266,7 @@ pub extern "system" fn libmpecdsa_keygen_round3(
 
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round4(
-    ctx: *mut Context,
+    ctx: *mut KeygenContext,
     vss_schemes: *mut c_char, //exclude self
     vss_scheme_length: *const i32, //party_total - 1
     result_length: *mut i32, //size = 1
@@ -325,7 +325,7 @@ pub extern "system" fn libmpecdsa_keygen_round4(
 
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round5(
-    ctx: *mut Context,
+    ctx: *mut KeygenContext,
     dlog_proofs: *mut c_char, //self included
     dlog_proof_length: *const i32, //size = party_total
     result_length: *mut i32,//size = 1
@@ -379,6 +379,8 @@ pub extern "system" fn libmpecdsa_keygen_round5(
 
 #[test]
 fn libmpecdsa_keygen_rounds_test() {
+    use std::fs;
+
     let ctx1 = libmpecdsa_kengen_ctx_init(1, 2, 1);
     let ctx2 = libmpecdsa_kengen_ctx_init(2, 2, 1);
     let mut bc1_length: i32 = 0;
@@ -498,6 +500,7 @@ fn libmpecdsa_keygen_rounds_test() {
     let round5_ans1_str = unsafe { CString::from_raw(round5_ans1_ptr).into_string().unwrap() };
     // println!("round5_ans1_str {:?}", round5_ans1_str);
     assert_eq!(round5_ans1_length as usize, round5_ans1_str.len());
+    fs::write("keys1.store", round5_ans1_str).expect("Unable to save.");
 
     let mut round5_ans2_length = 0;
     let round5_ans2_ptr = libmpecdsa_keygen_round5(
@@ -510,7 +513,33 @@ fn libmpecdsa_keygen_rounds_test() {
     let round5_ans2_str = unsafe { CString::from_raw(round5_ans2_ptr).into_string().unwrap() };
     // println!("round5_ans2_str {:?}", round5_ans2_str);
     assert_eq!(round5_ans2_length as usize, round5_ans2_str.len());
+    fs::write("keys2.store", round5_ans2_str).expect("Unable to save.");
 
     libmpecdsa_kengen_ctx_free(ctx1);
     libmpecdsa_kengen_ctx_free(ctx2);
 }
+
+// Sign
+pub struct SignContext {}
+
+#[no_mangle]
+pub extern "system" fn libmpecdsa_sign_ctx_init(
+    party_index: i32,
+    party_total: i32,
+    threshold: i32,
+) -> *mut SignContext {
+    assert!(party_index > 0, "party index must be positive.");
+    assert!(party_index <= party_total, "party index must be less than party_total.");
+    assert!(threshold > 0, "threshold must be positive.");
+    assert!(threshold < party_total, "threshold must be less than party_total.");
+
+    let ctx = Box::new(SignContext {});
+
+    Box::into_raw(ctx)
+}
+
+#[no_mangle]
+pub extern "system" fn libmpecdsa_sign_ctx_free(ctx: *mut SignContext) {
+    drop(unsafe { Box::from_raw(ctx) });
+}
+
