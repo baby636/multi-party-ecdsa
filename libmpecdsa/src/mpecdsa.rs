@@ -15,11 +15,8 @@ use curv::{
     },
     elliptic::curves::traits::{ECPoint, ECScalar}, FE, GE,
 };
-use libc::{c_char, c_uchar, int32_t};
-use paillier::{
-    Decrypt, DecryptionKey, EncryptionKey, KeyGeneration, Paillier, RawCiphertext, RawPlaintext,
-};
-use serde::{Deserialize, Serialize};
+use libc::c_char;
+use paillier::EncryptionKey;
 use zk_paillier::zkproofs::DLogStatement;
 
 use lib::{AEAD, aes_decrypt, aes_encrypt};
@@ -29,17 +26,14 @@ use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::party_i::{
 
 mod lib;
 
-pub struct context {
+pub struct Context {
     party_index: u16,
     party_keys: Keys,
     params: Parameters,
     shared_keys: SharedKeys,
     vss_scheme_vec: Vec<VerifiableSS>,
-    pk_vec: Vec<GE>,
-    //DLogProof.pk
     dlog_statements: Vec<DLogStatement>,
-    paillier_ek_vec: Vec<EncryptionKey>,
-    //Paillier encryption keys
+    paillier_ek_vec: Vec<EncryptionKey>, //Paillier encryption keys
     y_sum: GE,
     enc_keys: Vec<BigInt>,
     party_shares: Vec<FE>,
@@ -48,16 +42,16 @@ pub struct context {
 
 #[no_mangle]
 pub extern "system" fn libmpecdsa_kengen_ctx_init(
-    party_index: int32_t,
-    party_total: int32_t,
-    threshold: int32_t,
-) -> *mut context {
+    party_index: i32,
+    party_total: i32,
+    threshold: i32,
+) -> *mut Context {
     assert!(party_index > 0, "party index must be positive.");
     assert!(party_index <= party_total, "party index must be less than party_total.");
     assert!(threshold > 0, "threshold must be positive.");
     assert!(threshold < party_total, "threshold must be less than party_total.");
 
-    let ctx = Box::new(context {
+    let ctx = Box::new(Context {
         party_index: party_index as u16,
         party_keys: Keys::create(0),
         params: Parameters {
@@ -69,7 +63,6 @@ pub extern "system" fn libmpecdsa_kengen_ctx_init(
             x_i: FE::zero(),
         },
         vss_scheme_vec: Vec::with_capacity(party_total as usize),
-        pk_vec: Vec::with_capacity(party_total as usize),
         dlog_statements: Vec::with_capacity(party_total as usize),
         paillier_ek_vec: Vec::with_capacity(party_total as usize),
         y_sum: GE::base_point2(),
@@ -82,16 +75,16 @@ pub extern "system" fn libmpecdsa_kengen_ctx_init(
 }
 
 #[no_mangle]
-pub extern "system" fn libmpecdsa_kengen_ctx_free(ctx: *mut context) {
+pub extern "system" fn libmpecdsa_kengen_ctx_free(ctx: *mut Context) {
     drop(unsafe { Box::from_raw(ctx) });
 }
 
 //return { bc || decom }
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round1(
-    ctx: *mut context,
-    bc_length: *mut int32_t,
-    decom_length: *mut int32_t,
+    ctx: *mut Context,
+    bc_length: *mut i32, //size = 1
+    decom_length: *mut i32, // size = 1
 ) -> *mut c_char {
     let party_index = unsafe { &*ctx }.party_index;
     //It's better to use create_safe_prime, however it's extraordinarily inefficient.
@@ -101,11 +94,11 @@ pub extern "system" fn libmpecdsa_keygen_round1(
 
     let bc = serde_json::to_string(&bc_i).unwrap();
     unsafe {
-        *bc_length = bc.len() as int32_t;
+        *bc_length = bc.len() as i32;
     }
     let decom = serde_json::to_string(&decom_i).unwrap();
     unsafe {
-        *decom_length = decom.len() as int32_t;
+        *decom_length = decom.len() as i32;
     }
 
     let mut result = String::new();
@@ -118,12 +111,12 @@ pub extern "system" fn libmpecdsa_keygen_round1(
 // return ciphertexts,  and each length listed in  ciphertexts_length
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round2(
-    ctx: *mut context,
-    bcs: *mut c_char,
-    bc_i_length: *const int32_t,
-    decoms: *mut c_char,
-    decom_i_length: *const int32_t,
-    ciphertexts_length: *mut int32_t, //size = party_total - 1
+    ctx: *mut Context,
+    bcs: *mut c_char, //self included
+    bc_i_length: *const i32, //size = party_total
+    decoms: *mut c_char, //self included
+    decom_i_length: *const i32, //size = party_total
+    ciphertexts_length: *mut i32, //size = party_total - 1
 ) -> *mut c_char {
     let party_total = unsafe { &*ctx }.params.share_count;
     let threshold = unsafe { &*ctx }.params.threshold;
@@ -180,42 +173,52 @@ pub extern "system" fn libmpecdsa_keygen_round2(
         threshold: threshold,
         share_count: party_total,
     };
-    let (vss_scheme, secret_shares, _index) = party_keys
-        .phase1_verify_com_phase3_verify_correct_key_verify_dlog_phase2_distribute(
-            &params, &decom_vec, &bc_vec,
-        )
-        .expect("invalid key");
-    // push self
-    unsafe { &mut *ctx }.vss_scheme_vec.push(vss_scheme);
-    unsafe { &mut *ctx }.party_shares.push(secret_shares[(party_index - 1) as usize]);
+    // let (vss_scheme, secret_shares, _index) =
+    match party_keys.phase1_verify_com_phase3_verify_correct_key_verify_dlog_phase2_distribute(
+        &params,
+        &decom_vec,
+        &bc_vec,
+    ) {
+        Ok((vss_scheme, secret_shares, _)) => {
+            // push self
+            unsafe { &mut *ctx }.vss_scheme_vec.push(vss_scheme);
+            unsafe { &mut *ctx }.party_shares.push(secret_shares[(party_index - 1) as usize]);
 
-    let mut result = String::new();
-    let ciphertext_i_length: &mut [i32] = unsafe { slice::from_raw_parts_mut(ciphertexts_length, (party_total - 1) as usize) };
-    j = 0;
-    for (k, i) in (1..=party_total).enumerate() {
-        if i != party_index {
-            // prepare encrypted ss for party i:
-            let key_i = BigInt::to_vec(unsafe { &*ctx }.enc_keys[j].borrow());
-            let plaintext = BigInt::to_vec(&secret_shares[k].to_big_int());
-            let aead_pack_i = aes_encrypt(&key_i, &plaintext);
+            let mut result = String::new();
+            let ciphertext_i_length: &mut [i32] = unsafe { slice::from_raw_parts_mut(ciphertexts_length, (party_total - 1) as usize) };
+            j = 0;
+            for (k, i) in (1..=party_total).enumerate() {
+                if i != party_index {
+                    // prepare encrypted ss for party i:
+                    let key_i = BigInt::to_vec(unsafe { &*ctx }.enc_keys[j].borrow());
+                    let plaintext = BigInt::to_vec(&secret_shares[k].to_big_int());
+                    let aead_pack_i = aes_encrypt(&key_i, &plaintext);
 
-            let aead_pack_i_serialized = serde_json::to_string(&aead_pack_i).unwrap();
-            ciphertext_i_length[j] = aead_pack_i_serialized.len() as i32;
+                    let aead_pack_i_serialized = serde_json::to_string(&aead_pack_i).unwrap();
+                    ciphertext_i_length[j] = aead_pack_i_serialized.len() as i32;
 
-            result.push_str(&aead_pack_i_serialized);
-            j += 1;
+                    result.push_str(&aead_pack_i_serialized);
+                    j += 1;
+                }
+            }
+
+            CString::new(result).unwrap().into_raw()
+        },
+        Err(_) => {
+            unsafe {
+                *ciphertexts_length = 0
+            };
+            CString::new("").unwrap().into_raw()
         }
     }
-
-    CString::new(result).unwrap().into_raw()
 }
 
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round3(
-    ctx: *mut context,
+    ctx: *mut Context,
     ciphertexts: *mut c_char,// exclude self
-    ciphertext_i_length: *const int32_t,//party_total - 1
-    result_length: *mut int32_t,
+    ciphertext_i_length: *const i32,//party_total - 1
+    result_length: *mut i32, // size = 1
 ) -> *mut c_char {
     let party_total = unsafe { &*ctx }.params.share_count as usize;
     let party_index = unsafe { &*ctx }.party_index as usize;
@@ -255,7 +258,7 @@ pub extern "system" fn libmpecdsa_keygen_round3(
     let vss_scheme = unsafe { &*ctx }.vss_scheme_vec[0].clone();
     let result = serde_json::to_string(&vss_scheme).unwrap();
     unsafe {
-        *result_length = result.len() as int32_t;
+        *result_length = result.len() as i32;
     }
 
     CString::new(result).unwrap().into_raw()
@@ -263,10 +266,10 @@ pub extern "system" fn libmpecdsa_keygen_round3(
 
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round4(
-    ctx: *mut context,
-    vss_schemes: *mut c_char,
-    vss_scheme_length: *const int32_t, //party_total - 1
-    result_length: *mut int32_t,
+    ctx: *mut Context,
+    vss_schemes: *mut c_char, //exclude self
+    vss_scheme_length: *const i32, //party_total - 1
+    result_length: *mut i32, //size = 1
 ) -> *mut c_char {
     let party_index = unsafe { &*ctx }.party_index as usize;
     let party_total = unsafe { &*ctx }.params.share_count as usize;
@@ -305,15 +308,69 @@ pub extern "system" fn libmpecdsa_keygen_round4(
         Ok((shared_keys, dlog_proof)) => {
             let dlog_proof_str = serde_json::to_string(&dlog_proof).unwrap();
             unsafe {
-                *result_length = dlog_proof_str.len() as int32_t
+                *result_length = dlog_proof_str.len() as i32
             };
             tmp_ctx.shared_keys = shared_keys;
 
             CString::new(dlog_proof_str).unwrap().into_raw()
         }
-        Err(e) => {
+        Err(_) => {
             unsafe {
-                *result_length  = 0
+                *result_length = 0
+            };
+            CString::new("").unwrap().into_raw()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn libmpecdsa_keygen_round5(
+    ctx: *mut Context,
+    dlog_proofs: *mut c_char, //self included
+    dlog_proof_length: *const i32, //size = party_total
+    result_length: *mut i32,//size = 1
+) -> *mut c_char {
+    let party_total = unsafe { &*ctx }.params.share_count as usize;
+
+    let dlog_proof_length_array = {
+        assert!(!dlog_proof_length.is_null());
+        slice_from_raw_parts(dlog_proof_length, party_total)
+    };
+    let dlog_proofs_str = unsafe {
+        CString::from_raw(dlog_proofs).into_string().unwrap()
+    };
+    // TODO: check length of dlog_proofs_str satisfies.
+    let mut index = 0;
+    let mut dlog_proof_vec: Vec<DLogProof> = Vec::new();
+    for i in 0..party_total {
+        let length = unsafe { &*dlog_proof_length_array }[i] as usize;
+        let dlog_proof_i: DLogProof = serde_json::from_str(&dlog_proofs_str[index..index + length]).unwrap();
+        dlog_proof_vec.push(dlog_proof_i);
+        index += length;
+    }
+
+    let tmp_ctx = unsafe { &mut *ctx };
+    match Keys::verify_dlog_proofs(&tmp_ctx.params, &dlog_proof_vec, &tmp_ctx.decoms_y_i) {
+        Ok(()) => {
+            let pk_vec = (0..party_total).map(|i| dlog_proof_vec[i].pk).collect::<Vec<GE>>();
+            let result = serde_json::to_string(&(
+                &tmp_ctx.party_keys,
+                &tmp_ctx.shared_keys,
+                pk_vec,
+                &tmp_ctx.y_sum,
+                &tmp_ctx.vss_scheme_vec,
+                &tmp_ctx.paillier_ek_vec,
+                &tmp_ctx.dlog_statements,
+                tmp_ctx.party_index,
+            )).unwrap();
+            unsafe {
+                *result_length = result.len() as i32;
+            }
+            CString::new(result).unwrap().into_raw()
+        }
+        Err(_) => {
+            unsafe {
+                *result_length = 0
             };
             CString::new("").unwrap().into_raw()
         }
@@ -347,7 +404,7 @@ fn libmpecdsa_keygen_rounds_test() {
     assert_eq!(bc2_length + decom2_length, str2_str.len() as i32);
 
     let mut ciphertext1_length = [0];
-    let mut round2_str1_ptr = libmpecdsa_keygen_round2(
+    let round2_str1_ptr = libmpecdsa_keygen_round2(
         ctx1,
         CString::new(bcs_string.clone()).unwrap().into_raw(),
         &[bc1_length, bc2_length][0],
@@ -361,7 +418,7 @@ fn libmpecdsa_keygen_rounds_test() {
     // println!("round2 ans: length {:?}, {:?}", ciphertext_length[0], round2_ans_str);
 
     let mut ciphertext2_length = [0];
-    let mut round2_str2_ptr = libmpecdsa_keygen_round2(
+    let round2_str2_ptr = libmpecdsa_keygen_round2(
         ctx2,
         CString::new(bcs_string).unwrap().into_raw(),
         &[bc1_length, bc2_length][0],
@@ -376,7 +433,7 @@ fn libmpecdsa_keygen_rounds_test() {
 
     //round3 party1
     let mut round3_ans1_len = [0];
-    let mut round3_ans1_ptr = libmpecdsa_keygen_round3(
+    let round3_ans1_ptr = libmpecdsa_keygen_round3(
         ctx1,
         CString::new(round2_ans2_str).unwrap().into_raw(),
         &ciphertext2_length[0],
@@ -389,7 +446,7 @@ fn libmpecdsa_keygen_rounds_test() {
 
     //round3 party2
     let mut round3_ans2_len = [0];
-    let mut round3_ans2_ptr = libmpecdsa_keygen_round3(
+    let round3_ans2_ptr = libmpecdsa_keygen_round3(
         ctx2,
         CString::new(round2_ans1_str).unwrap().into_raw(),
         &ciphertext1_length[0],
@@ -401,7 +458,7 @@ fn libmpecdsa_keygen_rounds_test() {
     assert_eq!(round3_ans2_len[0], round3_ans2_str.len() as i32);
 
     let mut round4_ans1_len = 0;
-    let mut round4_ans1_ptr = libmpecdsa_keygen_round4(
+    let round4_ans1_ptr = libmpecdsa_keygen_round4(
         ctx1,
         CString::new(round3_ans2_str).unwrap().into_raw(),
         &round3_ans2_len[0],
@@ -413,7 +470,7 @@ fn libmpecdsa_keygen_rounds_test() {
     assert_eq!(round4_ans1_str.len(), round4_ans1_len as usize);
 
     let mut round4_ans2_len = 0;
-    let mut round4_ans2_ptr = libmpecdsa_keygen_round4(
+    let round4_ans2_ptr = libmpecdsa_keygen_round4(
         ctx2,
         CString::new(round3_ans1_str).unwrap().into_raw(),
         &round3_ans1_len[0],
@@ -421,10 +478,38 @@ fn libmpecdsa_keygen_rounds_test() {
     );
 
     let round4_ans2_str = unsafe { CString::from_raw(round4_ans2_ptr).into_string().unwrap() };
-    println!("round4_ans2_str {:?}", round4_ans2_str);
+    // println!("round4_ans2_str {:?}", round4_ans2_str);
     assert_eq!(round4_ans2_str.len(), round4_ans2_len as usize);
 
+    //round 5
+    let mut dlog_proofs = String::new();
+    dlog_proofs.push_str(&round4_ans1_str);
+    dlog_proofs.push_str(&round4_ans2_str);
+    let dlog_proof_length = [round4_ans1_len, round4_ans2_len];
 
+    let mut round5_ans1_length = 0;
+    let round5_ans1_ptr = libmpecdsa_keygen_round5(
+        ctx1,
+        CString::new(dlog_proofs.clone()).unwrap().into_raw(),
+        &dlog_proof_length[0],
+        &mut round5_ans1_length,
+    );
+
+    let round5_ans1_str = unsafe { CString::from_raw(round5_ans1_ptr).into_string().unwrap() };
+    // println!("round5_ans1_str {:?}", round5_ans1_str);
+    assert_eq!(round5_ans1_length as usize, round5_ans1_str.len());
+
+    let mut round5_ans2_length = 0;
+    let round5_ans2_ptr = libmpecdsa_keygen_round5(
+        ctx2,
+        CString::new(dlog_proofs).unwrap().into_raw(),
+        &dlog_proof_length[0],
+        &mut round5_ans2_length,
+    );
+
+    let round5_ans2_str = unsafe { CString::from_raw(round5_ans2_ptr).into_string().unwrap() };
+    // println!("round5_ans2_str {:?}", round5_ans2_str);
+    assert_eq!(round5_ans2_length as usize, round5_ans2_str.len());
 
     libmpecdsa_kengen_ctx_free(ctx1);
     libmpecdsa_kengen_ctx_free(ctx2);
