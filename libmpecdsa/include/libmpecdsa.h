@@ -67,5 +67,5 @@ char *libmpecdsa_keygen_round5(
         int32_t *result_length //size = 1
 );
 
-
+}
 #endif

@@ -30,9 +30,9 @@ done
 sleep 5
 echo "sign"
 
-for i in $(seq 1 $((t+1)));
+for i in $(seq 1 $((n)));
 do
-    echo "signing for client $i out of $((t+1))"
+    echo "signing for client $i out of $((n))"
     ./target/release/examples/gg20_sign_client http://127.0.0.1:8001 keys$i.store "KZen Networks" &
     sleep 3
 done

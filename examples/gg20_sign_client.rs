@@ -8,7 +8,7 @@ use curv::cryptographic_primitives::secret_sharing::feldman_vss::VerifiableSS;
 use paillier::EncryptionKey;
 use zk_paillier::zkproofs::DLogStatement;
 
-mod common;
+pub mod common;
 use common:: {
   Params, PartySignup, postb, broadcast, poll_for_broadcasts, sendp2p, poll_for_p2p, check_sig
 };
@@ -68,6 +68,7 @@ fn main() {
         .expect("unable to read the params, make sure config file is present in the same folder");
     let params: Params = serde_json::from_str(&data).unwrap();
     let THRESHOLD = params.threshold.parse::<u16>().unwrap();
+    let PARTIES: u16 = params.parties.parse::<u16>().unwrap();
 
     //signup:
     let (party_num_int, uuid) = match signup(&client).unwrap() {
@@ -86,14 +87,17 @@ fn main() {
     let round0_ans_vec = poll_for_broadcasts(
       &client,
         party_num_int,
-        THRESHOLD + 1,
+        PARTIES,
         delay,
         "round0",
         uuid.clone(),
     );
+
+   let signers_num = (round0_ans_vec.len() + 1) as u16; // the number of total signers
+   assert!(signers_num > THRESHOLD);
    let mut j = 0;
-   let mut signers_vec: Vec<usize> = Vec::new();
-   for i in 1..=THRESHOLD + 1 {
+   let mut signers_vec: Vec<usize> = Vec::new();   // all the signers, with the (party_id - 1)
+   for i in 1..=signers_num {
        if i == party_num_int {
            signers_vec.push((party_id - 1) as usize);
        } else {
@@ -128,7 +132,7 @@ fn main() {
    let round1_ans_vec = poll_for_broadcasts(
        &client,
        party_num_int,
-       THRESHOLD + 1,
+       signers_num,
        delay,
        "round1",
        uuid.clone()
@@ -138,7 +142,7 @@ fn main() {
    let mut bc1_vec: Vec<SignBroadcastPhase1> = Vec::new();
    let mut m_a_vec: Vec<MessageA> = Vec::new();
 
-   for i in 1..THRESHOLD + 2 {
+   for i in 1..signers_num + 1 {
        if i == party_num_int {
            bc1_vec.push(com.clone());
        } else {
@@ -159,7 +163,7 @@ fn main() {
     let mut m_b_w_send_vec: Vec<MessageB> = Vec::new();
     let mut ni_vec: Vec<FE> = Vec::new();
     let mut j = 0;
-    for i in 1..THRESHOLD + 2 {
+    for i in 1..signers_num + 1 {
         if i != party_num_int {
             let (m_b_gamma, beta_gamma, _, _) = MessageB::b(
               &sign_keys.gamma_i,
@@ -180,7 +184,7 @@ fn main() {
     }
 
     let mut j = 0;
-    for i in 1..THRESHOLD + 2 {
+    for i in 1..signers_num + 1 {
         if i != party_num_int {
             assert!(sendp2p(
                 &client,
@@ -198,7 +202,7 @@ fn main() {
     let round2_ans_vec = poll_for_p2p(
         &client,
         party_num_int,
-        THRESHOLD + 1,
+        signers_num,
         delay,
         "round2",
         uuid.clone(),
@@ -207,7 +211,7 @@ fn main() {
     let mut m_b_gamma_rec_vec: Vec<MessageB> = Vec::new();
     let mut m_b_w_rec_vec: Vec<MessageB> = Vec::new();
 
-    for i in 0..THRESHOLD {
+    for i in 0..signers_num - 1 {
         let (m_b_gamma_i, m_b_w_i): (MessageB, MessageB) =
            serde_json::from_str(&round2_ans_vec[i as usize]).unwrap();
         m_b_gamma_rec_vec.push(m_b_gamma_i);
@@ -219,7 +223,7 @@ fn main() {
 
     //TODO: identify these errors
     let mut j = 0;
-    for i in 1..THRESHOLD + 2 {
+    for i in 1..signers_num + 1 {
         if i != party_num_int {
             let m_b = m_b_gamma_rec_vec[j].clone();
             let alpha_ij_gamma = m_b.verify_proofs_get_alpha(&party_keys.dk, & sign_keys.k_i)
@@ -255,7 +259,7 @@ fn main() {
     let round3_ans_vec = poll_for_broadcasts(
         &client,
         party_num_int,
-        THRESHOLD + 1,
+        signers_num,
         delay,
         "round3",
         uuid.clone(),
@@ -284,7 +288,7 @@ fn main() {
     let round4_ans_vec = poll_for_broadcasts(
       &client,
         party_num_int,
-        THRESHOLD + 1,
+        signers_num,
         delay,
         "round4",
         uuid.clone(),
@@ -310,18 +314,8 @@ fn main() {
     };
 
     let R_dash = R * sign_keys.k_i;
-//    let phase5_proof = LocalSignature::phase5_proof_pdl(
-//        &R_dash,
-//        &R,
-//        &m_a_k.c,
-//        &e_vec[signers_vec[(party_num_int - 1) as usize]],
-//        &sign_keys.k_i,
-//        &m_a_randomness,
-//        &party_keys,
-//        &h1_h2_N_tilde_vec[signers_vec[(party_num_int - 1) as usize]]
-//    );
     let mut phase5_proof: Vec<PDLwSlackProof> = Vec::new();
-    for j in 0..THRESHOLD {
+    for j in 0..signers_num - 1 {
         let ind = if j < (party_num_int - 1) { j } else { j + 1 };
         let proof = LocalSignature::phase5_proof_pdl(
             &R_dash,
@@ -346,16 +340,16 @@ fn main() {
     let round5_ans_vec = poll_for_broadcasts(
         &client,
         party_num_int,
-        THRESHOLD + 1,
+        signers_num,
         delay,
         "round5",
         uuid.clone(),
     );
 
     let mut R_dash_vec: Vec<Secp256k1Point> = Vec::new();
-    let mut phase5_proof_vec: Vec<Vec<PDLwSlackProof>> = vec![Vec::new(); (THRESHOLD + 1) as usize];
+    let mut phase5_proof_vec: Vec<Vec<PDLwSlackProof>> = vec![Vec::new(); (signers_num) as usize];
     let mut j = 0;
-    for i in 1..THRESHOLD + 2 {
+    for i in 1..signers_num + 1 {
         if i == party_num_int {
             R_dash_vec.push(R_dash.clone());
             phase5_proof_vec.push(phase5_proof.clone());
@@ -368,7 +362,7 @@ fn main() {
             j += 1;
         }
     }
-    for i in 0..THRESHOLD + 1 {
+    for i in 0..signers_num {
       if i != (party_num_int - 1) {
           let ind  = if i < (party_num_int - 1) { i } else { i - 1 };
           let phase5_verify_zk = LocalSignature::phase5_verify_pdl(
@@ -414,7 +408,7 @@ fn main() {
     let round6_ans_vec = poll_for_broadcasts(
         &client,
         party_num_int,
-        THRESHOLD + 1,
+        signers_num,
         delay,
         "round6",
         uuid.clone(),
@@ -425,7 +419,7 @@ fn main() {
     let mut T_vec = Vec::new();
     let mut R_vec = Vec::new();
     let mut j = 0;
-    for i in 1..THRESHOLD + 2 {
+    for i in 1..signers_num + 1 {
         if i == party_num_int {
             S_vec.push(S.clone());
             homo_elgamal_proof_vec.push(homo_elgamal_proof.clone());
@@ -478,7 +472,7 @@ fn main() {
     let round7_ans_vec = poll_for_broadcasts(
         &client,
         party_num_int,
-        THRESHOLD + 1,
+        signers_num,
         delay,
         "round7",
         uuid.clone(),
@@ -487,12 +481,10 @@ fn main() {
     let mut local_sig_vec: Vec<LocalSignature> = Vec::new();
     let mut s_i_vec: Vec<FE> = Vec::new();
     let mut j = 0;
-    for i in 1..THRESHOLD + 2 {
+    for i in 1..signers_num + 1 {
         if i == party_num_int {
             local_sig_vec.push(local_sig.clone());
             s_i_vec.push(s_i.clone());
-            T_vec.push(T_i);
-            R_vec.push(R);
         } else {
             let (local_sig_j, s_j): (LocalSignature, FE) =
                 serde_json::from_str(&round7_ans_vec[j]).unwrap();

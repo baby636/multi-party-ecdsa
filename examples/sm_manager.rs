@@ -76,13 +76,14 @@ fn signup_sign(db_mtx: State<RwLock<HashMap<Key, String>>>) -> Json<Result<Party
         .expect("Unable to read params, make sure config file is present in the same folder ");
     let params: Params = serde_json::from_str(&data).unwrap();
     let threshold = params.threshold.parse::<u16>().unwrap();
+    let parties = params.parties.parse::<u16>().unwrap();
     let key = "signup-sign".to_string();
 
     let party_signup = {
         let hm = db_mtx.read().unwrap();
         let value = hm.get(&key).unwrap();
         let client_signup: PartySignup = serde_json::from_str(&value).unwrap();
-        if client_signup.number < threshold + 1 {
+        if client_signup.number < parties {
             PartySignup {
                 number: client_signup.number + 1,
                 uuid: client_signup.uuid,
