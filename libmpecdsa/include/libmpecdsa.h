@@ -10,13 +10,13 @@ typedef uint16_t codeunit;
 typedef uint8_t codeunit;
 #endif
 
-void *libmpecdsa_kengen_ctx_init(
+void *libmpecdsa_keygen_ctx_init(
         int32_t party_index, // >= 1
         int32_t party_total, // n
         int32_t threshold // t
 );
 
-void *libmpecdsa_kengen_ctx_free(void *);
+void *libmpecdsa_keygen_ctx_free(void *);
 
 // return bc || decom,
 // their length stored in bc_length and decom_length respectively.
@@ -65,6 +65,95 @@ char *libmpecdsa_keygen_round5(
         char *dlog_proofs, // self included
         int32_t *dlof_proof_length, // size = party_total
         int32_t *result_length //size = 1
+);
+
+
+// sign begin here
+void *libmpecdsa_sign_ctx_init(
+        int32_t party_total,  // n
+        int32_t threshold    //  t
+);
+
+void *libmpecdsa_sign_ctx_free(void *);
+
+//the output includes: commit || m_a
+char *libmpecdsa_sign_round1(
+        void *ctx,
+        char *keygen_result,      //the keygen result
+        int32_t *signers,         //the parties envolving in generating the signature
+        int32_t signers_num,      //the number of signers, must be larger that threshold (t)
+        int32_t *commit_length,   // the length of commit in the returned value, size = 1
+        int32_t *m_a_k_length       // the length of m_a_k in the returned value, size = 1
+);
+
+//the output includes: m_b_gamma || m_b_wi, both have the size: signers_num - 1
+char *libmpecdsa_sign_round2(
+        void *ctx,
+        char *commits,                //size = signers_num
+        int32_t *commits_length,      // size = signers_num
+        char *m_a_ks,                 // size = signers_num
+        int32_t *m_a_ks_length,       // size = signers_num
+        int32_t *m_b_gamma_length,    // size = signers_num - 1
+        int32_t *m_b_wi_length        // size = signers_num - 1
+);
+
+// the output includes: delta_i
+char *libmpecdsa_sign_round3(
+       void *ctx,
+       char *m_b_gamma_rec,         // size = signers_num - 1
+       int32_t *m_b_gamma_length,   // size = signers_num - 1
+       char *m_b_wi_rec,            // size = signers_num - 1
+       int32_t *m_b_wi_rec_length   // size = signers_num - 1
+);
+
+// the output includes: decommit
+char *libmpecdsa_sign_round4(
+       void *ctx,
+       char *delta_i_rec,    // size = signers_num
+       int32_t *delta_i_length   // size = signers_nun
+);
+
+// the output includes: R || R_dash || phase5_proof
+char *libmpecdsa_sign_round5(
+       void *ctx,
+       char *decommit_rec,         // size = signers_num
+       int32_t *decommit_length,     // size = signers_num
+       int32_t *r_dash_proof_length   // size = 3
+);
+
+//the output includes: S || homo_elgamal_proof || T_i
+char *libmpecdsa_sign_round6(
+       void *ctx,
+       char *R_rec,           // size = signers_num
+       int32_t *R_length,     // size = signers_num
+       char *R_dash_rec,        // size = signers_num
+       int32_t *R_dash_length,       // size = signers_num
+       char *phase5_proof_rec,       // size = signers_num
+       int32_t *phase5_proof_length,  // size = signers_num
+       int32_t *S_proof_T_length     // size =  3
+);
+
+
+//the output includes: local_sig || s_i
+char *libmpecdsa_sign_round7(
+       void *ctx,
+       char *S_rec,           // size = signers_num
+       int32_t *S_length,          // size = singers_num
+       char *homo_proof_rec,          //size = signers_num
+       int32_t *homo_proof_length,    //size = signers_num
+       char *T_i_rec,                 // size = signers_num
+       int32_t *T_i_length,          // size = signers_num
+       int32_t *sig_s_i_length,      // size = 2
+       char *message               // the message to be signed
+);
+
+// the output includes: signature
+char *libmpecdsa_sign_round8(
+      void *ctx,
+      char *local_sig_rec,           // size = signers_num
+      int32_t *local_sig_length,     // size = signers_num
+      char *s_i_rec,                 //  size = signers_num
+      int32_t *s_i_length            // size = signers_num
 );
 
 }
