@@ -3,9 +3,9 @@ extern crate libc;
 extern crate multi_party_ecdsa;
 
 use std::borrow::Borrow;
-use std::ffi::{CString, CStr};
-use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
-use std::{slice, fs};
+use std::ffi::{CStr, CString};
+use std::ptr::slice_from_raw_parts;
+use std::slice::from_raw_parts_mut;
 
 use curv::{
     arithmetic::traits::Converter,
@@ -15,20 +15,22 @@ use curv::{
     },
     elliptic::curves::traits::{ECPoint, ECScalar}, FE, GE,
 };
+use curv::cryptographic_primitives::hashing::hash_sha256::HSha256;
+use curv::cryptographic_primitives::hashing::traits::Hash;
+use curv::cryptographic_primitives::proofs::sigma_correct_homomorphic_elgamal_enc::HomoELGamalProof;
+use curv::elliptic::curves::secp256_k1::Secp256k1Point;
 use libc::c_char;
 use paillier::EncryptionKey;
 use zk_paillier::zkproofs::DLogStatement;
 
 use lib::{AEAD, aes_decrypt, aes_encrypt};
-use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::party_i::{KeyGenBroadcastMessage1, KeyGenDecommitMessage1, Keys, Parameters, SharedKeys, PartyPrivate, SignKeys, SignDecommitPhase1, SignBroadcastPhase1, LocalSignature, SignatureRecid};
+use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::blame::GlobalStatePhase7;
+use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::party_i::{
+    KeyGenBroadcastMessage1, KeyGenDecommitMessage1, Keys, LocalSignature, Parameters, PartyPrivate,
+    SharedKeys, SignatureRecid, SignBroadcastPhase1, SignDecommitPhase1, SignKeys
+};
 use multi_party_ecdsa::utilities::mta::{MessageA, MessageB};
 use multi_party_ecdsa::utilities::zk_pdl_with_slack::PDLwSlackProof;
-use curv::elliptic::curves::secp256_k1::{Secp256k1Point, Secp256k1Scalar};
-use curv::cryptographic_primitives::proofs::sigma_correct_homomorphic_elgamal_enc::HomoELGamalProof;
-use curv::cryptographic_primitives::hashing::hash_sha256::HSha256;
-use curv::cryptographic_primitives::hashing::traits::Hash;
-use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::blame::GlobalStatePhase7;
-use crate::lib::check_sig;
 
 mod lib;
 
@@ -96,7 +98,8 @@ pub extern "system" fn libmpecdsa_keygen_round1(
     //It's better to use create_safe_prime, however it's extraordinarily inefficient.
     // let party_keys = Keys::create_safe_prime(party_index as usize);
     unsafe { &mut *ctx }.party_keys = Keys::create(party_index as usize);
-    let (bc_i, decom_i) = unsafe { &*ctx }.party_keys.phase1_broadcast_phase3_proof_of_correct_key_proof_of_correct_h1h2();
+    let (bc_i, decom_i) = unsafe { &*ctx }.party_keys
+        .phase1_broadcast_phase3_proof_of_correct_key_proof_of_correct_h1h2();
 
     let bc = serde_json::to_string(&bc_i).unwrap();
     unsafe {
@@ -118,9 +121,9 @@ pub extern "system" fn libmpecdsa_keygen_round1(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round2(
     ctx: *mut KeygenContext,
-    bcs: *mut c_char, //self included
+    bcs: *const c_char, //self included
     bc_i_length: *const i32, //size = party_total
-    decoms: *mut c_char, //self included
+    decoms: *const c_char, //self included
     decom_i_length: *const i32, //size = party_total
     ciphertexts_length: *mut i32, //size = party_total - 1
 ) -> *mut c_char {
@@ -193,7 +196,7 @@ pub extern "system" fn libmpecdsa_keygen_round2(
             unsafe { &mut *ctx }.party_shares.push(secret_shares[(party_index - 1) as usize]);
 
             let mut result = String::new();
-            let ciphertext_i_length: &mut [i32] = unsafe { slice::from_raw_parts_mut(ciphertexts_length, (party_total - 1) as usize) };
+            let ciphertext_i_length: &mut [i32] = unsafe { from_raw_parts_mut(ciphertexts_length, (party_total - 1) as usize) };
             j = 0;
             for (k, i) in (1..=party_total).enumerate() {
                 if i != party_index {
@@ -216,7 +219,7 @@ pub extern "system" fn libmpecdsa_keygen_round2(
             unsafe {
                 *ciphertexts_length = 0
             };
-            CString::new("").unwrap().into_raw()
+            std::ptr::null_mut() as *mut c_char
         }
     }
 }
@@ -224,9 +227,8 @@ pub extern "system" fn libmpecdsa_keygen_round2(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round3(
     ctx: *mut KeygenContext,
-    ciphertexts: *mut c_char,// exclude self
-    ciphertext_i_length: *const i32,//party_total - 1
-    result_length: *mut i32, // size = 1
+    ciphertexts: *const c_char,// exclude self
+    ciphertext_i_length: *const i32//size = party_total - 1
 ) -> *mut c_char {
     let party_total = unsafe { &*ctx }.params.share_count as usize;
     let party_index = unsafe { &*ctx }.party_index as usize;
@@ -266,9 +268,6 @@ pub extern "system" fn libmpecdsa_keygen_round3(
     assert!(unsafe { &*ctx }.vss_scheme_vec.len() == 1);
     let vss_scheme = unsafe { &*ctx }.vss_scheme_vec[0].clone();
     let result = serde_json::to_string(&vss_scheme).unwrap();
-    unsafe {
-        *result_length = result.len() as i32;
-    }
 
     CString::new(result).unwrap().into_raw()
 }
@@ -276,9 +275,8 @@ pub extern "system" fn libmpecdsa_keygen_round3(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round4(
     ctx: *mut KeygenContext,
-    vss_schemes: *mut c_char, //exclude self
-    vss_scheme_length: *const i32, //party_total - 1
-    result_length: *mut i32, //size = 1
+    vss_schemes: *const c_char, //exclude self
+    vss_scheme_length: *const i32, //size = party_total - 1
 ) -> *mut c_char {
     let party_index = unsafe { &*ctx }.party_index as usize;
     let party_total = unsafe { &*ctx }.params.share_count as usize;
@@ -317,18 +315,12 @@ pub extern "system" fn libmpecdsa_keygen_round4(
         ) {
         Ok((shared_keys, dlog_proof)) => {
             let dlog_proof_str = serde_json::to_string(&dlog_proof).unwrap();
-            unsafe {
-                *result_length = dlog_proof_str.len() as i32
-            };
             tmp_ctx.shared_keys = shared_keys;
 
             CString::new(dlog_proof_str).unwrap().into_raw()
         }
         Err(_) => {
-            unsafe {
-                *result_length = 0
-            };
-            CString::new("").unwrap().into_raw()
+            std::ptr::null_mut() as *mut c_char
         }
     }
 }
@@ -336,9 +328,8 @@ pub extern "system" fn libmpecdsa_keygen_round4(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_keygen_round5(
     ctx: *mut KeygenContext,
-    dlog_proofs: *mut c_char, //self included
+    dlog_proofs: *const c_char, //self included
     dlog_proof_length: *const i32, //size = party_total
-    result_length: *mut i32,//size = 1
 ) -> *mut c_char {
     let party_total = unsafe { &*ctx }.params.share_count as usize;
 
@@ -375,22 +366,17 @@ pub extern "system" fn libmpecdsa_keygen_round5(
                 &tmp_ctx.dlog_statements,
                 tmp_ctx.party_index,
             )).unwrap();
-            unsafe {
-                *result_length = result.len() as i32;
-            }
+
             CString::new(result).unwrap().into_raw()
         }
         Err(_) => {
-            unsafe {
-                *result_length = 0
-            };
-            CString::new("").unwrap().into_raw()
+            std::ptr::null_mut() as *mut c_char
         }
     }
 }
 
 #[test]
-fn libmpecdsa_keygen_rounds_test() {
+fn libmpecdsa_keygen_test() {
     use std::fs;
 
     let ctx1 = libmpecdsa_keygen_ctx_init(1, 2, 1);
@@ -461,12 +447,10 @@ fn libmpecdsa_keygen_rounds_test() {
     // println!("round2 ans: length {:?}, {:?}", ciphertext_length[0], round2_ans_str);
 
     //round3 party1
-    let mut round3_ans1_len = [0];
     let round3_ans1_ptr = libmpecdsa_keygen_round3(
         ctx1,
         CString::new(round2_ans2_str).unwrap().into_raw(),
         &ciphertext2_length[0],
-        &mut round3_ans1_len[0],
     );
 
     let round3_ans1_str = unsafe {CStr::from_ptr(round3_ans1_ptr)}
@@ -475,15 +459,13 @@ fn libmpecdsa_keygen_rounds_test() {
         .to_string();
 
     // println!("round3_ans1_str {:?}", round3_ans1_str);
-    assert_eq!(round3_ans1_len[0], round3_ans1_str.len() as i32);
+    let round3_ans1_len = [round3_ans1_str.len() as i32];
 
     //round3 party2
-    let mut round3_ans2_len = [0];
     let round3_ans2_ptr = libmpecdsa_keygen_round3(
         ctx2,
         CString::new(round2_ans1_str).unwrap().into_raw(),
         &ciphertext1_length[0],
-        &mut round3_ans2_len[0],
     );
 
     let round3_ans2_str = unsafe {CStr::from_ptr(round3_ans2_ptr)}
@@ -491,62 +473,52 @@ fn libmpecdsa_keygen_rounds_test() {
         .expect("invalid round3_ans2_ptr");
 
     // println!("round3_ans2_str {:?}", round3_ans2_str);
-    assert_eq!(round3_ans2_len[0], round3_ans2_str.len() as i32);
+    let round3_ans2_len = [round3_ans2_str.len() as i32];
 
-    let mut round4_ans1_len = 0;
     let round4_ans1_ptr = libmpecdsa_keygen_round4(
         ctx1,
         CString::new(round3_ans2_str).unwrap().into_raw(),
         &round3_ans2_len[0],
-        &mut round4_ans1_len,
     );
 
     let round4_ans1_str = unsafe { CString::from_raw(round4_ans1_ptr).into_string().unwrap() };
     // println!("round4_ans1_str {:?}", round4_ans1_str);
-    assert_eq!(round4_ans1_str.len(), round4_ans1_len as usize);
 
-    let mut round4_ans2_len = 0;
     let round4_ans2_ptr = libmpecdsa_keygen_round4(
         ctx2,
         CString::new(round3_ans1_str).unwrap().into_raw(),
         &round3_ans1_len[0],
-        &mut round4_ans2_len,
     );
 
     let round4_ans2_str = unsafe { CString::from_raw(round4_ans2_ptr).into_string().unwrap() };
     // println!("round4_ans2_str {:?}", round4_ans2_str);
-    assert_eq!(round4_ans2_str.len(), round4_ans2_len as usize);
 
     //round 5
     let mut dlog_proofs = String::new();
     dlog_proofs.push_str(&round4_ans1_str);
     dlog_proofs.push_str(&round4_ans2_str);
-    let dlog_proof_length = [round4_ans1_len, round4_ans2_len];
+    let dlog_proof_length = [round4_ans1_str.len() as i32, round4_ans2_str.len() as i32];
 
-    let mut round5_ans1_length = 0;
     let round5_ans1_ptr = libmpecdsa_keygen_round5(
         ctx1,
         CString::new(dlog_proofs.clone()).unwrap().into_raw(),
         &dlog_proof_length[0],
-        &mut round5_ans1_length,
     );
 
     let round5_ans1_str = unsafe { CString::from_raw(round5_ans1_ptr).into_string().unwrap() };
     // println!("round5_ans1_str {:?}", round5_ans1_str);
-    assert_eq!(round5_ans1_length as usize, round5_ans1_str.len());
+    assert!(round5_ans1_str.len() > 0);
     fs::write("keys1.store", round5_ans1_str).expect("Unable to save.");
 
-    let mut round5_ans2_length = 0;
     let round5_ans2_ptr = libmpecdsa_keygen_round5(
         ctx2,
         CString::new(dlog_proofs).unwrap().into_raw(),
         &dlog_proof_length[0],
-        &mut round5_ans2_length,
     );
 
     let round5_ans2_str = unsafe { CString::from_raw(round5_ans2_ptr).into_string().unwrap() };
     // println!("round5_ans2_str {:?}", round5_ans2_str);
-    assert_eq!(round5_ans2_length as usize, round5_ans2_str.len());
+    assert!(round5_ans2_str.len() > 0);
     fs::write("keys2.store", round5_ans2_str).expect("Unable to save.");
 
     libmpecdsa_keygen_ctx_free(ctx1);
@@ -640,7 +612,7 @@ pub extern "system" fn libmpecdsa_sign_ctx_free(ctx: *mut SignContext) {
 #[no_mangle]
 pub extern "system" fn libmpecdsa_sign_round1(
     ctx: *mut SignContext,
-    keygen_result: *mut c_char,
+    keygen_result: *const c_char,
     signers: *const i32,
     signers_num: i32,
     commit_length: *mut i32,
@@ -653,7 +625,7 @@ pub extern "system" fn libmpecdsa_sign_round1(
     let (
         party_keys,
         shared_keys,
-        pk_vec,
+        _pk_vec,
         y_sum,
         vss_scheme_vec,
         paillier_ek_vec,
@@ -736,9 +708,9 @@ pub extern "system" fn libmpecdsa_sign_round1(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_sign_round2(
     ctx: *mut SignContext,
-    commits: *mut c_char,
+    commits: *const c_char,
     commits_length: *const i32,  // size = signers_num
-    m_a_ks: *mut c_char,
+    m_a_ks: *const c_char,
     m_a_ks_length: *const i32,   // size = signers_num
     m_b_gamma_length: *mut i32,  // size = signers_num - 1
     m_b_wi_length: *mut i32,     // size  = signers-num - 1
@@ -754,10 +726,9 @@ pub extern "system" fn libmpecdsa_sign_round2(
         .expect("invalid commits")
         .to_string();
 
-    let mut current_length = 0;
     let mut j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*commits_length_array}[i] as usize;
+        let current_length = unsafe {&*commits_length_array}[i] as usize;
         let commit: SignBroadcastPhase1 = serde_json::from_str(&commits_str[j..j + current_length]).unwrap();
         commit_vec.push(commit);
         j = j + current_length;
@@ -777,7 +748,7 @@ pub extern "system" fn libmpecdsa_sign_round2(
 
     j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*m_a_k_lenth_array}[i] as usize;
+        let current_length = unsafe {&*m_a_k_lenth_array}[i] as usize;
         let m_a_k: MessageA = serde_json::from_str(&m_a_ks_str[j..j + current_length]).unwrap();
         m_a_k_vec.push(m_a_k);
         j = j + current_length;
@@ -788,7 +759,7 @@ pub extern "system" fn libmpecdsa_sign_round2(
     let mut gamma_beta_vec: Vec<FE> = Vec::new();
     let mut m_b_w_send_vec: Vec<MessageB> = Vec::new();
     let mut wi_beta_vec: Vec<FE> = Vec::new();
-    j = 0;
+
     for i in 0..tmp_ctx.signer_num {
         if i != tmp_ctx.signer_index {
             let (m_b_gamma, beta_gamma, _, _) = MessageB::b(
@@ -811,14 +782,14 @@ pub extern "system" fn libmpecdsa_sign_round2(
     tmp_ctx.wi_beta_vec = wi_beta_vec;
 
     let mut result = String::new();
-    let mut m_b_gamma_length: &mut [i32] = unsafe {slice::from_raw_parts_mut(m_b_gamma_length, tmp_ctx.signer_num - 1)};
+    let m_b_gamma_length: &mut [i32] = unsafe { from_raw_parts_mut(m_b_gamma_length, tmp_ctx.signer_num - 1) };
     for i in 0..tmp_ctx.signer_num - 1 {
         let m_b_gamma_str = serde_json::to_string(&m_b_gamma_send_vec[i]).unwrap();
         m_b_gamma_length[i] = m_b_gamma_str.len() as i32;
         result.push_str(&m_b_gamma_str);
     }
 
-    let mut m_b_w_length: &mut [i32] = unsafe {slice::from_raw_parts_mut(m_b_wi_length, tmp_ctx.signer_num - 1)};
+    let m_b_w_length: &mut [i32] = unsafe { from_raw_parts_mut(m_b_wi_length, tmp_ctx.signer_num - 1) };
     for i in 0..tmp_ctx.signer_num - 1 {
         let m_b_w_str = serde_json::to_string(&m_b_w_send_vec[i]).unwrap();
         m_b_w_length[i] = m_b_w_str.len() as i32;
@@ -831,9 +802,9 @@ pub extern "system" fn libmpecdsa_sign_round2(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_sign_round3(
     ctx: *mut SignContext,
-    m_b_gamma_rec: *mut c_char,
+    m_b_gamma_rec: *const c_char,
     m_b_gamma_length: *const i32, // size = signers_num - 1
-    m_b_wi_rec: *mut c_char,
+    m_b_wi_rec: *const c_char,
     m_b_wi_rec_length: *const i32, // size = signers_num - 1
 ) -> *mut c_char {
     let mut tmp_ctx = unsafe { &mut *ctx };
@@ -847,10 +818,9 @@ pub extern "system" fn libmpecdsa_sign_round3(
         .expect("invalid m_b_gamma_rec")
         .to_string();
 
-    let mut current_length = 0;
     let mut j = 0;
     for i in 0..tmp_ctx.signer_num - 1 {
-        current_length = unsafe {&*m_b_gamma_length_array}[i] as usize;
+        let current_length = unsafe {&*m_b_gamma_length_array}[i] as usize;
         let m_b_gamma: MessageB = serde_json::from_str(&m_b_gamma_rec_str[j..j + current_length]).unwrap();
         m_b_gamma_rev_vec.push(m_b_gamma);
         j = j + current_length;
@@ -868,7 +838,7 @@ pub extern "system" fn libmpecdsa_sign_round3(
 
     j = 0;
     for i in 0..tmp_ctx.signer_num - 1 {
-        current_length = unsafe {&*m_b_wi_length_array}[i] as usize;
+        let current_length = unsafe {&*m_b_wi_length_array}[i] as usize;
         let m_b_wi: MessageB = serde_json::from_str(&m_b_wi_rec_str[j..j + current_length]).unwrap();
         m_b_wi_rec_vec.push(m_b_wi);
         j = j + current_length;
@@ -913,7 +883,7 @@ pub extern "system" fn libmpecdsa_sign_round3(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_sign_round4(
     ctx: *mut SignContext,
-    delta_i_rec: *mut c_char,
+    delta_i_rec: *const c_char,
     delta_i_length: *const i32,
 ) -> *mut c_char {
     let mut tmp_ctx = unsafe {&mut *ctx};
@@ -927,10 +897,9 @@ pub extern "system" fn libmpecdsa_sign_round4(
         .expect("invalid delta_i_rec")
         .to_string();
 
-    let mut current_length = 0;
     let mut j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*delta_i_length_array}[i] as usize;
+        let current_length = unsafe {&*delta_i_length_array}[i] as usize;
         let delta_i: FE = serde_json::from_str(&delta_i_rec_str[j..j + current_length]).unwrap();
         delta_i_rec_vec.push(delta_i);
         j = j + current_length;
@@ -949,11 +918,11 @@ pub extern "system" fn libmpecdsa_sign_round4(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_sign_round5(
     ctx: *mut SignContext,
-    decommit_rec: *mut c_char,
+    decommit_rec: *const c_char,
     decommit_length: *const i32,
     r_dash_proof_length: *mut i32,
 ) -> *mut c_char {
-    let mut tmp_ctx = unsafe{&mut *ctx};
+    let tmp_ctx = unsafe{&mut *ctx};
     let mut decommit_rec_vec: Vec<SignDecommitPhase1> = Vec::new();
     let decommit_length_array = {
         assert!(!decommit_length.is_null());
@@ -964,10 +933,9 @@ pub extern "system" fn libmpecdsa_sign_round5(
         .expect("invalid decommit_rec")
         .to_string();
 
-    let mut current_length = 0;
     let mut j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*decommit_length_array}[i] as usize;
+        let current_length = unsafe {&*decommit_length_array}[i] as usize;
         let decommit: SignDecommitPhase1 = serde_json::from_str(&decommit_rec_str[j..j + current_length]).unwrap();
         decommit_rec_vec.push(decommit);
         j = j + current_length;
@@ -1001,7 +969,7 @@ pub extern "system" fn libmpecdsa_sign_round5(
         phase5_proof.push(proof);
     }
     let mut result = String::new();
-    let mut r_dash_proof_size: &mut [i32] = unsafe {slice::from_raw_parts_mut(r_dash_proof_length, 3)};
+    let r_dash_proof_size: &mut [i32] = unsafe { from_raw_parts_mut(r_dash_proof_length, 3) };
     let R_str = serde_json::to_string(&R).unwrap();
     r_dash_proof_size[0] = R_str.len() as i32;
     result.push_str(&R_str);
@@ -1018,17 +986,17 @@ pub extern "system" fn libmpecdsa_sign_round5(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_sign_round6(
     ctx: *mut SignContext,
-    R_rec: *mut c_char,
+    R_rec: *const c_char,
     R_length: *const i32,
-    R_dash_rec: *mut c_char,
+    R_dash_rec: *const c_char,
     R_dash_length: *const i32,
-    phase5_proof_rec: *mut c_char,
+    phase5_proof_rec: *const c_char,
     phase5_proof_length: *const i32,
     S_proof_T_length: *mut i32,
 ) -> *mut c_char {
     let mut tmp_ctx = unsafe{&mut *ctx};
     let mut R_rec_vec: Vec<GE> = Vec::new();
-    let mut R_length_array = {
+    let R_length_array = {
         assert!(!R_length.is_null());
         slice_from_raw_parts(R_length, tmp_ctx.signer_num)
     };
@@ -1037,10 +1005,9 @@ pub extern "system" fn libmpecdsa_sign_round6(
         .expect("invalid R_rec")
         .to_string();
 
-    let mut current_length = 0;
     let mut j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*R_length_array}[i] as usize;
+        let current_length = unsafe {&*R_length_array}[i] as usize;
         let R: GE = serde_json::from_str(&R_rec_str[j..j + current_length]).unwrap();
         R_rec_vec.push(R);
         j = j + current_length;
@@ -1048,7 +1015,7 @@ pub extern "system" fn libmpecdsa_sign_round6(
     tmp_ctx.R_vec = R_rec_vec;
 
     let mut R_dash_rec_vec: Vec<Secp256k1Point> = Vec::new();
-    let mut R_dash_length_array = {
+    let R_dash_length_array = {
         assert!(!R_dash_length.is_null());
         slice_from_raw_parts(R_dash_length, tmp_ctx.signer_num)
     };
@@ -1057,10 +1024,9 @@ pub extern "system" fn libmpecdsa_sign_round6(
         .expect("invalid R_dash_rec")
         .to_string();
 
-    current_length = 0;
     j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe{&*R_dash_length_array}[i] as usize;
+        let current_length = unsafe{&*R_dash_length_array}[i] as usize;
         let R_dash: Secp256k1Point = serde_json::from_str(&R_dash_rec_str[j..j + current_length]).unwrap();
         R_dash_rec_vec.push(R_dash);
         j = j + current_length;
@@ -1068,7 +1034,7 @@ pub extern "system" fn libmpecdsa_sign_round6(
     tmp_ctx.R_dash_vec = R_dash_rec_vec;
 
     let mut phase5_proof_rec_vec: Vec<Vec<PDLwSlackProof>> = Vec::new();
-    let mut phase5_proof_length_array = unsafe {
+    let phase5_proof_length_array = {
         assert!(!phase5_proof_length.is_null());
         slice_from_raw_parts(phase5_proof_length, tmp_ctx.signer_num)
     };
@@ -1077,10 +1043,9 @@ pub extern "system" fn libmpecdsa_sign_round6(
         .expect("invalid phase5_proof_rec")
         .to_string();
 
-    current_length = 0;
     j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe{&*phase5_proof_length_array}[i] as usize;
+        let current_length = unsafe{&*phase5_proof_length_array}[i] as usize;
         let phase5_proof: Vec<PDLwSlackProof> = serde_json::from_str(&phase5_proof_rec_str[j..j + current_length]).unwrap();
         phase5_proof_rec_vec.push(phase5_proof);
         j = j + current_length;
@@ -1120,7 +1085,7 @@ pub extern "system" fn libmpecdsa_sign_round6(
         &tmp_ctx.l_i,
     );
     let mut result = String::new();
-    let mut S_proof_T_size: &mut [i32] = unsafe {slice::from_raw_parts_mut(S_proof_T_length, 3)};
+    let S_proof_T_size: &mut [i32] = unsafe { from_raw_parts_mut(S_proof_T_length, 3) };
     let S_str = serde_json::to_string(&S).unwrap();
     S_proof_T_size[0] = S_str.len() as i32;
     result.push_str(&S_str);
@@ -1137,18 +1102,18 @@ pub extern "system" fn libmpecdsa_sign_round6(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_sign_round7(
     ctx: *mut SignContext,
-    S_rec: *mut c_char,
+    S_rec: *const c_char,
     S_length: *const i32,
-    homo_proof_rec: *mut c_char,
+    homo_proof_rec: *const c_char,
     homo_proof_length: *const i32,
-    T_i_rec: *mut c_char,
+    T_i_rec: *const c_char,
     T_i_length: *const i32,
+    message: *const c_char,
     sig_s_i_length: *mut i32,
-    message: *mut c_char,
 ) -> *mut c_char {
-    let mut tmp_ctx = unsafe {&mut *ctx};
+    let tmp_ctx = unsafe {&mut *ctx};
     let mut S_rec_vec: Vec<GE> = Vec::new();
-    let mut S_length_array = {
+    let S_length_array = {
         assert!(!S_length.is_null());
         slice_from_raw_parts(S_length, tmp_ctx.signer_num)
     };
@@ -1156,10 +1121,10 @@ pub extern "system" fn libmpecdsa_sign_round7(
         .to_str()
         .expect("invalid S_rec")
         .to_string();
-    let mut current_length = 0;
+
     let mut j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*S_length_array}[i] as usize;
+        let current_length = unsafe {&*S_length_array}[i] as usize;
         let S: GE = serde_json::from_str(&S_rec_str[j..j + current_length]).unwrap();
         S_rec_vec.push(S);
         j = j + current_length;
@@ -1175,10 +1140,9 @@ pub extern "system" fn libmpecdsa_sign_round7(
         .expect("invalid homo_proof_rec")
         .to_string();
 
-    current_length = 0;
     j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*homo_proof_length_array}[i] as usize;
+        let current_length = unsafe {&*homo_proof_length_array}[i] as usize;
         let homo_proof: HomoELGamalProof = serde_json::from_str(&homo_proof_str[j..j + current_length]).unwrap();
         homo_proof_rec_vec.push(homo_proof);
         j = j + current_length;
@@ -1194,10 +1158,9 @@ pub extern "system" fn libmpecdsa_sign_round7(
         .expect("invalid T_i_rec")
         .to_string();
 
-    current_length = 0;
     j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*T_i_length_array}[i] as usize;
+        let current_length = unsafe {&*T_i_length_array}[i] as usize;
         let T_i: GE = serde_json::from_str(&T_i_rec_str[j..j + current_length]).unwrap();
         T_i_rec_vec.push(T_i);
         j = j + current_length;
@@ -1216,9 +1179,10 @@ pub extern "system" fn libmpecdsa_sign_round7(
         panic!("phase6 check failed");
     }
 
-    let message_str = unsafe {
-        CString::from_raw(message).into_string().unwrap()
-    };
+    let message_str = unsafe { CStr::from_ptr(message) }
+        .to_str()
+        .expect("invalid message")
+        .to_string();
     let message = match hex::decode(message_str.clone()) {
         Ok(x) => x,
         Err(_e) => message_str.as_bytes().to_vec(),
@@ -1236,7 +1200,7 @@ pub extern "system" fn libmpecdsa_sign_round7(
     let s_i  = local_sig.s_i.clone();
 
     let mut result = String::new();
-    let mut sig_s_i_size: &mut [i32] = unsafe {slice::from_raw_parts_mut(sig_s_i_length, 2)};
+    let sig_s_i_size: &mut [i32] = unsafe { from_raw_parts_mut(sig_s_i_length, 2) };
     let local_sig_str = serde_json::to_string(&local_sig).unwrap();
     sig_s_i_size[0] = local_sig_str.len() as i32;
     result.push_str(&local_sig_str);
@@ -1250,14 +1214,14 @@ pub extern "system" fn libmpecdsa_sign_round7(
 #[no_mangle]
 pub extern "system" fn libmpecdsa_sign_round8(
     ctx: *mut SignContext,
-    local_sig_rec: *mut c_char,
+    local_sig_rec: *const c_char,
     local_sig_length: *const i32,
-    s_i_rec: *mut c_char,
+    s_i_rec: *const c_char,
     s_i_length: *const i32,
 ) -> *mut c_char {
-    let mut tmp_ctx = unsafe {&mut *ctx};
+    let tmp_ctx = unsafe {&mut *ctx};
     let mut local_sig_vec: Vec<LocalSignature> = Vec::new();
-    let mut local_sig_length_array = {
+    let local_sig_length_array = {
         assert!(!local_sig_length.is_null());
         slice_from_raw_parts(local_sig_length, tmp_ctx.signer_num)
     };
@@ -1266,17 +1230,16 @@ pub extern "system" fn libmpecdsa_sign_round8(
         .expect("invalid local_sig_vec")
         .to_string();
 
-    let mut current_length = 0;
     let mut j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*local_sig_length_array}[i] as usize;
+        let current_length = unsafe {&*local_sig_length_array}[i] as usize;
         let local_sig: LocalSignature = serde_json::from_str(&local_sig_str[j..j + current_length]).unwrap();
         local_sig_vec.push(local_sig);
         j = j + current_length;
     }
 
     let mut s_i_vec: Vec<FE> = Vec::new();
-    let mut s_i_length_array = {
+    let s_i_length_array = {
         assert!(!s_i_length.is_null());
         slice_from_raw_parts(s_i_length, tmp_ctx.signer_num)
     };
@@ -1284,10 +1247,10 @@ pub extern "system" fn libmpecdsa_sign_round8(
         .to_str()
         .expect("invalid s_i_rec")
         .to_string();
-    let mut current_length = 0;
+
     let mut j = 0;
     for i in 0..tmp_ctx.signer_num {
-        current_length = unsafe {&*s_i_length_array}[i] as usize;
+        let current_length = unsafe {&*s_i_length_array}[i] as usize;
         let s_i: FE = serde_json::from_str(&s_i_str[j..j + current_length]).unwrap();
         s_i_vec.push(s_i);
         j  = j + current_length;
@@ -1317,8 +1280,9 @@ pub extern "system" fn libmpecdsa_sign_round8(
 
 
 #[test]
-fn libmpecdsa_sign_rounds_test() {
+fn libmpecdsa_sign_test() {
     use std::fs;
+    use crate::lib::check_sig;
 
     let ctx1 = libmpecdsa_sign_ctx_init(2, 1);
     let ctx2 = libmpecdsa_sign_ctx_init(2, 1);
@@ -1474,11 +1438,10 @@ fn libmpecdsa_sign_rounds_test() {
         &mut r_dash_proof2_length[0],
     );
     let round5_str2 = unsafe{CString::from_raw(round5_ptr2).into_string().unwrap()};
-    let mut i = 0;
-    let mut j = 0;
-    i = r_dash_proof2_length[0] as usize;
+
+    let mut i = r_dash_proof2_length[0] as usize;
     R_string.push_str(&round5_str2[..i]);
-    j = i + r_dash_proof2_length[1] as usize;
+    let mut j = i + r_dash_proof2_length[1] as usize;
     R_dash_string.push_str(&round5_str2[i..j]);
     proof_string.push_str(&round5_str2[j..]);
     assert_eq!(j + r_dash_proof2_length[2] as usize, round5_str2.len());
@@ -1523,8 +1486,7 @@ fn libmpecdsa_sign_rounds_test() {
         &mut S_proof_T2_length[0],
     );
     let round6_str2 = unsafe {CString::from_raw(round6_ptr2).into_string().unwrap()};
-    i = 0;
-    j = 0;
+
     i = S_proof_T2_length[0] as usize;
     S_string.push_str(&round6_str2[..i]);
     j = i + S_proof_T2_length[1]  as usize;
@@ -1555,8 +1517,8 @@ fn libmpecdsa_sign_rounds_test() {
         &[S_proof_T2_length[1], S_proof_T1_length[1]][0],
         CString::new(T_i_string.clone()).unwrap().into_raw(),
         &[S_proof_T2_length[2], S_proof_T1_length[2]][0],
-        &mut sig_s_i1_length[0],
         CString::new(message.clone()).unwrap().into_raw(),
+        &mut sig_s_i1_length[0],
     );
     let round7_str1 = unsafe {CString::from_raw(round7_ptr1).into_string().unwrap()};
     assert_eq!((sig_s_i1_length[0] + sig_s_i1_length[1]) as usize, round7_str1.len());
@@ -1570,9 +1532,8 @@ fn libmpecdsa_sign_rounds_test() {
         &[S_proof_T2_length[1], S_proof_T1_length[1]][0],
         CString::new(T_i_string).unwrap().into_raw(),
         &[S_proof_T2_length[2], S_proof_T1_length[2]][0],
-        &mut sig_s_i2_length[0],
         CString::new(message.clone()).unwrap().into_raw(),
-
+        &mut sig_s_i2_length[0],
     );
     let round7_str2 = unsafe {CString::from_raw(round7_ptr2).into_string().unwrap()};
     assert_eq!((sig_s_i2_length[0] + sig_s_i2_length[1]) as usize, round7_str1.len());
@@ -1632,6 +1593,7 @@ fn libmpecdsa_sign_rounds_test() {
 }
 
 fn save_signature(sig: &SignatureRecid, path: &str) {
+    use std::fs;
     let sign_json = serde_json::to_string(&(
         "r",
         (BigInt::from(&(sig.r.get_element())[..])).to_str_radix(16),
