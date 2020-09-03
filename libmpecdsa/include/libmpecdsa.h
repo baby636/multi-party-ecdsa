@@ -38,7 +38,7 @@ extern "C" {
     char *libmpecdsa_keygen_round3(
             void *ctx,
             const char *ciphertexts,//exclude self
-            const int32_t *ciphertext_i_length, //size = party_total - 1
+            const int32_t *ciphertext_i_length //size = party_total - 1
     );
 
     //input vss_schemes, length of each party (exclude self) stored in vss_scheme_length array.
@@ -47,7 +47,7 @@ extern "C" {
     char *libmpecdsa_keygen_round4(
             void *ctx,
             const char *vss_schemes, //exclude self
-            const int32_t *vss_scheme_length, //size = party_total - 1
+            const int32_t *vss_scheme_length //size = party_total - 1
     );
 
     // input dlog_proofs, length of each party stored in dlof_proof_length.
@@ -56,7 +56,7 @@ extern "C" {
     char *libmpecdsa_keygen_round5(
             void *ctx,
             const char *dlog_proofs, // self included
-            const int32_t *dlof_proof_length, // size = party_total
+            const int32_t *dlof_proof_length // size = party_total
     );
 
 
