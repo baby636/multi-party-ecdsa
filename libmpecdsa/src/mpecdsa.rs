@@ -218,7 +218,10 @@ pub extern "system" fn libmpecdsa_keygen_round2(
             for (k, i) in (1..=party_total).enumerate() {
                 if i != party_index {
                     // prepare encrypted ss for party i:
-                    let key_i = BigInt::to_vec(unsafe { &*ctx }.enc_keys[j].borrow());
+                    let mut key_i = BigInt::to_vec(unsafe { &*ctx }.enc_keys[j].borrow());
+                    while key_i.len() < 32 {
+                        key_i.insert(0, 0);
+                    }
                     let plaintext = BigInt::to_vec(&secret_shares[k].to_big_int());
                     let aead_pack_i = aes_encrypt(&key_i, &plaintext);
 
@@ -267,7 +270,10 @@ pub extern "system" fn libmpecdsa_keygen_round3(
                 Err(_) => return std::ptr::null_mut() as *mut c_char
             };
             let enc_key_i = unsafe { &*ctx }.enc_keys[j].clone();
-            let key_i = BigInt::to_vec(&enc_key_i);
+            let mut key_i = BigInt::to_vec(&enc_key_i);
+            while key_i.len() < 32 {
+                key_i.insert(0, 0);
+            }
             let out = aes_decrypt(&key_i, aead_pack);
             let out_bn = BigInt::from(&out[..]);
             let out_fe = ECScalar::from(&out_bn);
@@ -686,7 +692,7 @@ pub extern "system" fn libmpecdsa_sign_round1(
         }
     }
     if !is_self_included {
-        return std::ptr::null_mut() as *mut c_char
+        return std::ptr::null_mut() as *mut c_char;
     }
     tmp_ctx.signers_vec = signers_vec.clone();
     tmp_ctx.signer_num = signers_num;
@@ -886,7 +892,7 @@ pub extern "system" fn libmpecdsa_sign_round3(
                 &tmp_ctx.signers_vec,
             );
             if !(m_b.b_proof.pk == g_w_i) {
-                return std::ptr::null_mut() as *mut c_char
+                return std::ptr::null_mut() as *mut c_char;
             }
             j = j + 1;
         }
@@ -1015,7 +1021,7 @@ pub extern "system" fn libmpecdsa_sign_round6(
 ) -> *mut c_char {
     let mut tmp_ctx = unsafe { &mut *ctx };
     let mut R_rec_vec: Vec<GE> = Vec::new();
-    let R_length_array =  slice_from_raw_parts(R_length, tmp_ctx.signer_num);
+    let R_length_array = slice_from_raw_parts(R_length, tmp_ctx.signer_num);
     let R_rec_str = match read_char(R_rec) {
         Some(s) => s,
         None => return std::ptr::null_mut() as *mut c_char
@@ -1279,7 +1285,7 @@ pub extern "system" fn libmpecdsa_sign_round8(
     // test
     //error in phase 7:
     if sig.is_err() {
-        return std::ptr::null_mut() as *mut c_char
+        return std::ptr::null_mut() as *mut c_char;
     }
     //for testing purposes: checking with a second verifier:
 
@@ -1545,7 +1551,7 @@ fn libmpecdsa_sign_test() {
         CString::new(message.clone()).unwrap().into_raw(),
         &mut sig_s_i2_length[0],
     );
-    let round7_str2 = unsafe {CString::from_raw(round7_ptr2).into_string().unwrap()};
+    let round7_str2 = unsafe { CString::from_raw(round7_ptr2).into_string().unwrap() };
     assert_eq!((sig_s_i2_length[0] + sig_s_i2_length[1]) as usize, round7_str2.len());
 
     local_sig_string.push_str(&round7_str2[..sig_s_i2_length[0] as usize]);
