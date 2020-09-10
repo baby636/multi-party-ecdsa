@@ -135,7 +135,7 @@ extern "C" {
             const int32_t *homo_proof_length,    //size = signers_num
             const char *T_i_rec,                 // size = signers_num
             const int32_t *T_i_length,          // size = signers_num
-            const char *message,               // the message to be signed
+            const char *message_hash,               // the 32 hex byte of message hash
             int32_t *sig_s_i_length      // size = 2
 
     );

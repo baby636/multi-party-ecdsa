@@ -30,6 +30,8 @@ use multi_party_ecdsa::protocols::multi_party_ecdsa::gg_2020::party_i::{
 };
 use multi_party_ecdsa::utilities::mta::{MessageA, MessageB};
 use multi_party_ecdsa::utilities::zk_pdl_with_slack::PDLwSlackProof;
+use crypto::sha2::Sha256;
+use crypto::digest::Digest;
 
 mod lib;
 
@@ -1132,7 +1134,7 @@ pub extern "system" fn libmpecdsa_sign_round7(
     homo_proof_length: *const i32,
     T_i_rec: *const c_char,
     T_i_length: *const i32,
-    message: *const c_char,
+    message_hash: *const c_char,
     sig_s_i_length: *mut i32,
 ) -> *mut c_char {
     let tmp_ctx = unsafe { &mut *ctx };
@@ -1202,21 +1204,19 @@ pub extern "system" fn libmpecdsa_sign_round7(
         return std::ptr::null_mut() as *mut c_char;
     }
 
-    let message_str = match read_char(message) {
+    let hash_str = match read_char(message_hash) {
         Some(s) => s,
         None => return std::ptr::null_mut() as *mut c_char
     };
 
-    let message = match hex::decode(message_str.clone()) {
+    let hash = match hex::decode(hash_str.clone()) {
         Ok(x) => x,
-        Err(_e) => message_str.as_bytes().to_vec(),
+        Err(_e) => return std::ptr::null_mut() as *mut c_char,
     };
-    let message = &message[..];
-
-    let message_bn = HSha256::create_hash(&[&BigInt::from(&message[..])]);
+    let hash_bn = BigInt::from(&hash[..]);
     let local_sig = LocalSignature::phase7_local_sig(
         &tmp_ctx.sign_keys.k_i,
-        &message_bn,
+        &hash_bn,
         &tmp_ctx.R_vec[tmp_ctx.signer_index],
         &tmp_ctx.sigma_i,
         &tmp_ctx.y_sum,
@@ -1522,8 +1522,8 @@ fn libmpecdsa_sign_test() {
     let mut local_sig_string = String::new();
     let mut s_i_string = String::new();
     let mut message: String = String::new();
-    message.push_str("multi-party ecdsa signature");
-
+    let message = "multi-party ecdsa signature".as_bytes();
+    let message_hash = HSha256::create_hash_from_slice(message).to_hex();
     let mut sig_s_i1_length = [0, 0];
     let round7_ptr1 = libmpecdsa_sign_round7(
         ctx1,
@@ -1533,7 +1533,7 @@ fn libmpecdsa_sign_test() {
         &[S_proof_T2_length[1], S_proof_T1_length[1]][0],
         CString::new(T_i_string.clone()).unwrap().into_raw(),
         &[S_proof_T2_length[2], S_proof_T1_length[2]][0],
-        CString::new(message.clone()).unwrap().into_raw(),
+        CString::new(message_hash.clone()).unwrap().into_raw(),
         &mut sig_s_i1_length[0],
     );
     let round7_str1 = unsafe { CString::from_raw(round7_ptr1).into_string().unwrap() };
@@ -1548,7 +1548,7 @@ fn libmpecdsa_sign_test() {
         &[S_proof_T2_length[1], S_proof_T1_length[1]][0],
         CString::new(T_i_string).unwrap().into_raw(),
         &[S_proof_T2_length[2], S_proof_T1_length[2]][0],
-        CString::new(message.clone()).unwrap().into_raw(),
+        CString::new(message_hash.clone()).unwrap().into_raw(),
         &mut sig_s_i2_length[0],
     );
     let round7_str2 = unsafe { CString::from_raw(round7_ptr2).into_string().unwrap() };
@@ -1575,14 +1575,12 @@ fn libmpecdsa_sign_test() {
     println!("s: {:?} \n", sig1.s.get_element());
     println!("recid: {:?} \n", sig1.recid.clone());
 
-    let message = match hex::decode(message.clone()) {
+    let message_hash = match hex::decode(message_hash.clone()) {
         Ok(x) => x,
-        Err(_e) => message.as_bytes().to_vec(),
+        Err(_e) => panic!("decode the message hash error"),
     };
-    let message = &message[..];
-
-    let message_bn = HSha256::create_hash(&[&BigInt::from(&message[..])]);
-
+    let message_hash = &message_hash[..];
+    let message_bn = BigInt::from(message_hash);
     check_sig(&sig1.r, &sig1.s, &message_bn, &tmp_ctx1.y_sum);
 
     let round8_ptr2 = libmpecdsa_sign_round8(
