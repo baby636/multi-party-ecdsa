@@ -135,18 +135,14 @@ extern "C" {
             const int32_t *homo_proof_length,    //size = signers_num
             const char *T_i_rec,                 // size = signers_num
             const int32_t *T_i_length,          // size = signers_num
-            const char *message_hash,               // the 32 hex byte of message hash
-            int32_t *sig_s_i_length      // size = 2
-
+            const char *message_hash               // the 32 hex byte of message hash
     );
 
     // the output includes: signature
     char *libmpecdsa_sign_round8(
             void *ctx,
             const char *local_sig_rec,           // size = signers_num
-            const int32_t *local_sig_length,     // size = signers_num
-            const char *s_i_rec,                 //  size = signers_num
-            const int32_t *s_i_length            // size = signers_num
+            const int32_t *local_sig_length     // size = signers_num
     );
 
 }

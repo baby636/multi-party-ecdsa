@@ -1135,7 +1135,6 @@ pub extern "system" fn libmpecdsa_sign_round7(
     T_i_rec: *const c_char,
     T_i_length: *const i32,
     message_hash: *const c_char,
-    sig_s_i_length: *mut i32,
 ) -> *mut c_char {
     let tmp_ctx = unsafe { &mut *ctx };
     let mut S_rec_vec: Vec<GE> = Vec::new();
@@ -1221,16 +1220,10 @@ pub extern "system" fn libmpecdsa_sign_round7(
         &tmp_ctx.sigma_i,
         &tmp_ctx.y_sum,
     );
-    let s_i = local_sig.s_i.clone();
 
     let mut result = String::new();
-    let sig_s_i_size: &mut [i32] = unsafe { from_raw_parts_mut(sig_s_i_length, 2) };
     let local_sig_str = serde_json::to_string(&local_sig).unwrap();
-    sig_s_i_size[0] = local_sig_str.len() as i32;
     result.push_str(&local_sig_str);
-    let s_i_str = serde_json::to_string(&s_i).unwrap();
-    sig_s_i_size[1] = s_i_str.len() as i32;
-    result.push_str(&s_i_str);
 
     CString::new(result).unwrap().into_raw()
 }
@@ -1240,11 +1233,10 @@ pub extern "system" fn libmpecdsa_sign_round8(
     ctx: *mut SignContext,
     local_sig_rec: *const c_char,
     local_sig_length: *const i32,
-    s_i_rec: *const c_char,
-    s_i_length: *const i32,
 ) -> *mut c_char {
     let tmp_ctx = unsafe { &mut *ctx };
     let mut local_sig_vec: Vec<LocalSignature> = Vec::new();
+    let mut s_i_vec: Vec<FE> = Vec::new();
     let local_sig_length_array = slice_from_raw_parts(local_sig_length, tmp_ctx.signer_num);
     let local_sig_str = match read_char(local_sig_rec) {
         Some(s) => s,
@@ -1258,39 +1250,23 @@ pub extern "system" fn libmpecdsa_sign_round8(
             Ok(r) => r,
             Err(_) => return std::ptr::null_mut() as *mut c_char
         };
+        s_i_vec.push(local_sig.s_i);
         local_sig_vec.push(local_sig);
+
         j = j + current_length;
     }
 
-    let mut s_i_vec: Vec<FE> = Vec::new();
-    let s_i_length_array = slice_from_raw_parts(s_i_length, tmp_ctx.signer_num);
-    let s_i_str = match read_char(s_i_rec) {
-        Some(s) => s,
-        None => return std::ptr::null_mut() as *mut c_char
-    };
-
-    let mut j = 0;
-    for i in 0..tmp_ctx.signer_num {
-        let current_length = unsafe { &*s_i_length_array }[i] as usize;
-        let s_i: FE = match serde_json::from_str(&s_i_str[j..j + current_length]) {
-            Ok(r) => r,
-            Err(_) => return std::ptr::null_mut() as *mut c_char
-        };
-        s_i_vec.push(s_i);
-        j = j + current_length;
+    if local_sig_vec[0].y != tmp_ctx.y_sum {
+        return std::ptr::null_mut() as *mut c_char
     }
-
-    assert_eq!(local_sig_vec[0].y, tmp_ctx.y_sum);
     let sig = local_sig_vec[0].output_signature(&s_i_vec[1..]);
     // test
     //error in phase 7:
     if sig.is_err() {
         return std::ptr::null_mut() as *mut c_char;
     }
-    //for testing purposes: checking with a second verifier:
 
     let sig = sig.unwrap();
-
     CString::new(serde_json::to_string(&sig).unwrap()).unwrap().into_raw()
 }
 
@@ -1408,7 +1384,6 @@ fn libmpecdsa_sign_test() {
         &[m_b_wi1_length[0]][0],
     );
     let round3_str2 = unsafe { CString::from_raw(round3_ptr2).into_string().unwrap() };
-//    assert_eq!(round3_str1.len(), round3_str2.len());
 
     //round4
     let mut delta_i_rec = String::new();
@@ -1428,7 +1403,6 @@ fn libmpecdsa_sign_test() {
         &[round3_str2.len() as i32, round3_str1.len() as i32][0],
     );
     let round4_str2 = unsafe { CString::from_raw(round4_ptr2).into_string().unwrap() };
-//    assert_eq!(round4_str1.len(), round4_str2.len());
 
     //round 5
     let mut R_string = String::new();
@@ -1517,14 +1491,12 @@ fn libmpecdsa_sign_test() {
     T_i_string.push_str(&round6_str1[j..]);
     assert_eq!(j + S_proof_T1_length[2] as usize, round6_str1.len());
 
-
     //round 7
     let mut local_sig_string = String::new();
-    let mut s_i_string = String::new();
     let mut message: String = String::new();
     let message = "multi-party ecdsa signature".as_bytes();
     let message_hash = HSha256::create_hash_from_slice(message).to_hex();
-    let mut sig_s_i1_length = [0, 0];
+    let mut sig1_length = [0];
     let round7_ptr1 = libmpecdsa_sign_round7(
         ctx1,
         CString::new(S_string.clone()).unwrap().into_raw(),
@@ -1534,12 +1506,9 @@ fn libmpecdsa_sign_test() {
         CString::new(T_i_string.clone()).unwrap().into_raw(),
         &[S_proof_T2_length[2], S_proof_T1_length[2]][0],
         CString::new(message_hash.clone()).unwrap().into_raw(),
-        &mut sig_s_i1_length[0],
     );
     let round7_str1 = unsafe { CString::from_raw(round7_ptr1).into_string().unwrap() };
-    assert_eq!((sig_s_i1_length[0] + sig_s_i1_length[1]) as usize, round7_str1.len());
 
-    let mut sig_s_i2_length = [0, 0];
     let round7_ptr2 = libmpecdsa_sign_round7(
         ctx2,
         CString::new(S_string).unwrap().into_raw(),
@@ -1549,24 +1518,17 @@ fn libmpecdsa_sign_test() {
         CString::new(T_i_string).unwrap().into_raw(),
         &[S_proof_T2_length[2], S_proof_T1_length[2]][0],
         CString::new(message_hash.clone()).unwrap().into_raw(),
-        &mut sig_s_i2_length[0],
     );
     let round7_str2 = unsafe { CString::from_raw(round7_ptr2).into_string().unwrap() };
-    assert_eq!((sig_s_i2_length[0] + sig_s_i2_length[1]) as usize, round7_str2.len());
 
-    local_sig_string.push_str(&round7_str2[..sig_s_i2_length[0] as usize]);
-    local_sig_string.push_str(&round7_str1[..sig_s_i1_length[0] as usize]);
-
-    s_i_string.push_str(&round7_str2[sig_s_i2_length[0] as usize..]);
-    s_i_string.push_str(&round7_str1[sig_s_i1_length[0] as usize..]);
+    local_sig_string.push_str(&round7_str2[..]);
+    local_sig_string.push_str(&round7_str1[..]);
 
     //round 8
     let round8_ptr1 = libmpecdsa_sign_round8(
         ctx1,
         CString::new(local_sig_string.clone()).unwrap().into_raw(),
-        &[sig_s_i2_length[0], sig_s_i1_length[0]][0],
-        CString::new(s_i_string.clone()).unwrap().into_raw(),
-        &[sig_s_i2_length[1], sig_s_i1_length[1]][0],
+        &[round7_str2.len() as i32, round7_str1.len() as i32][0],
     );
     let round8_str1 = unsafe { CString::from_raw(round8_ptr1).into_string().unwrap() };
     let sig1: SignatureRecid = serde_json::from_str(&round8_str1).unwrap();
@@ -1586,9 +1548,7 @@ fn libmpecdsa_sign_test() {
     let round8_ptr2 = libmpecdsa_sign_round8(
         ctx2,
         CString::new(local_sig_string).unwrap().into_raw(),
-        &[sig_s_i2_length[0], sig_s_i1_length[0]][0],
-        CString::new(s_i_string).unwrap().into_raw(),
-        &[sig_s_i2_length[1], sig_s_i1_length[1]][0],
+        &[round7_str2.len() as i32, round7_str1.len() as i32][0],
     );
     let round8_str2 = unsafe { CString::from_raw(round8_ptr2).into_string().unwrap() };
     let sig2: SignatureRecid = serde_json::from_str(&round8_str2).unwrap();
